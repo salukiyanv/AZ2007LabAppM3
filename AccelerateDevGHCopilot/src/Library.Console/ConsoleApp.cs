@@ -3,6 +3,7 @@ using Library.ApplicationCore.Entities;
 using Library.ApplicationCore.Enums;
 using Library.Console;
 
+using Library.Infrastructure.Data;
 public class ConsoleApp
 {
     ConsoleState _currentState = ConsoleState.PatronSearch;
@@ -16,13 +17,15 @@ public class ConsoleApp
     ILoanRepository _loanRepository;
     ILoanService _loanService;
     IPatronService _patronService;
+    private readonly JsonData _jsonData;
 
-    public ConsoleApp(ILoanService loanService, IPatronService patronService, IPatronRepository patronRepository, ILoanRepository loanRepository)
+    public ConsoleApp(ILoanService loanService, IPatronService patronService, IPatronRepository patronRepository, ILoanRepository loanRepository, JsonData jsonData)
     {
         _patronRepository = patronRepository;
         _loanRepository = loanRepository;
         _loanService = loanService;
         _patronService = patronService;
+        _jsonData = jsonData ?? throw new ArgumentNullException(nameof(jsonData));
     }
 
     public async Task Run()
@@ -102,6 +105,12 @@ public class ConsoleApp
             {
                 var selectedPatron = matchingPatrons.ElementAt(selectedPatronNumber - 1);
                 selectedPatronDetails = await _patronRepository.GetPatron(selectedPatron.Id)!;
+                // Ensure selectedPatronDetails is not null after assignment
+                selectedPatronDetails = await _patronRepository.GetPatron(selectedPatronDetails.Id);
+                if (selectedPatronDetails == null)
+                {
+                    throw new InvalidOperationException("Failed to retrieve patron details.");
+                }
                 return ConsoleState.PatronDetails;
             }
             else
@@ -126,6 +135,10 @@ public class ConsoleApp
     {
         CommonActions action;
         optionNumber = 0;
+        if (options.HasFlag(CommonActions.SearchBooks))
+        {
+            Console.WriteLine(" - \"b\" to search for books");
+        }
         do
         {
             Console.WriteLine();
@@ -182,6 +195,12 @@ public class ConsoleApp
 
     async Task<ConsoleState> PatronDetails()
     {
+        // Added null check for selectedPatronDetails
+        if (selectedPatronDetails == null)
+        {
+            throw new InvalidOperationException("Selected patron details cannot be null.");
+        }
+
         Console.WriteLine($"Name: {selectedPatronDetails.Name}");
         Console.WriteLine($"Membership Expiration: {selectedPatronDetails.MembershipEnd}");
         Console.WriteLine();
@@ -193,7 +212,7 @@ public class ConsoleApp
             loanNumber++;
         }
 
-        CommonActions options = CommonActions.SearchPatrons | CommonActions.Quit | CommonActions.Select | CommonActions.RenewPatronMembership;
+        CommonActions options = CommonActions.SearchPatrons | CommonActions.Quit | CommonActions.Select | CommonActions.RenewPatronMembership | CommonActions.SearchBooks;
         CommonActions action = ReadInputOptions(options, out int selectedLoanNumber);
         if (action == CommonActions.Select)
         {
@@ -223,14 +242,68 @@ public class ConsoleApp
             Console.WriteLine(EnumHelper.GetDescription(status));
             // reloading after renewing membership
             selectedPatronDetails = (await _patronRepository.GetPatron(selectedPatronDetails.Id))!;
+            // Ensure selectedPatronDetails is not null after assignment
+            selectedPatronDetails = await _patronRepository.GetPatron(selectedPatronDetails.Id);
+            if (selectedPatronDetails == null)
+            {
+                throw new InvalidOperationException("Failed to retrieve patron details.");
+            }
+            return ConsoleState.PatronDetails;
+        }
+        else if (action == CommonActions.SearchBooks)
+        {
+            await SearchBooks();
             return ConsoleState.PatronDetails;
         }
 
         throw new InvalidOperationException("An input option is not handled.");
     }
 
+    async Task SearchBooks()
+    {
+        string? bookTitle = null;
+        while (string.IsNullOrWhiteSpace(bookTitle))
+        {
+            Console.Write("Enter a book title to search for: ");
+            bookTitle = Console.ReadLine();
+        }
+
+        await _jsonData.EnsureDataLoaded();
+
+        var matchingBook = _jsonData.Books?.FirstOrDefault(b => b.Title.Equals(bookTitle, StringComparison.OrdinalIgnoreCase));
+        if (matchingBook == null)
+        {
+            Console.WriteLine($"No book found with title: {bookTitle}");
+            return;
+        }
+
+        var matchingBookItem = _jsonData.BookItems?.FirstOrDefault(bi => bi.BookId == matchingBook.Id);
+        if (matchingBookItem == null)
+        {
+            Console.WriteLine($"No book item found for title: {bookTitle}");
+            return;
+        }
+
+        var activeLoan = _jsonData.Loans?.FirstOrDefault(l => l.BookItemId == matchingBookItem.Id && l.ReturnDate == null);
+
+        if (activeLoan == null)
+        {
+            Console.WriteLine($"{matchingBook.Title} is available for loan.");
+        }
+        else
+        {
+            Console.WriteLine($"{matchingBook.Title} is on loan to another patron. The return due date is {activeLoan.DueDate}.");
+        }
+    }
+
     async Task<ConsoleState> LoanDetails()
     {
+        // Added null check for selectedLoanDetails
+        if (selectedLoanDetails == null)
+        {
+            throw new InvalidOperationException("Selected loan details cannot be null.");
+        }
+
         Console.WriteLine($"Book title: {selectedLoanDetails.BookItem!.Book!.Title}");
         Console.WriteLine($"Book Author: {selectedLoanDetails.BookItem!.Book!.Author!.Name}");
         Console.WriteLine($"Due date: {selectedLoanDetails.DueDate}");
